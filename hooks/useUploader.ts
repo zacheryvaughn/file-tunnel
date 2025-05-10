@@ -26,15 +26,23 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
   const [files, setFiles] = useState<ResumableFile[]>([]);
   const [support, setSupport] = useState(false);
   
-  // Refs to avoid re-renders
+  // Refs to avoid re-renders and stale closures
   const eventsRef = useRef<any[]>([]);
   const optionsRef = useRef(options);
+  const filesRef = useRef<ResumableFile[]>([]);
+  const isPausedRef = useRef<boolean>(false);
   
   // Initialize
   useEffect(() => {
     setSupport(checkSupport());
     optionsRef.current = options;
   }, [options]);
+
+  // Keep filesRef in sync with files state
+  useEffect(() => {
+    console.log(`Files state changed: ${files.length} files with ${files.reduce((sum, file) => sum + file.chunks.length, 0)} total chunks`);
+    filesRef.current = files;
+  }, [files]);
 
   // Helper functions
   const getOpt = useCallback((option: string | string[]) => {
@@ -78,51 +86,132 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
 
   // Upload management
   const uploadNextChunk = useCallback(() => {
+    // Use filesRef.current to avoid stale closure issues
+    const currentFiles = filesRef.current;
+    
+    // If globally paused, don't upload anything
+    if (isPausedRef.current) {
+      console.log('Upload is globally paused, not uploading next chunk');
+      return false;
+    }
+    
+    console.log('uploadNextChunk called - current files:', currentFiles.length, 'with total chunks:',
+      currentFiles.reduce((sum, file) => sum + file.chunks.length, 0));
+    
+    // Safety check - if files array is empty but we know we should have files, don't proceed with completion
+    if (currentFiles.length === 0) {
+      console.log('No files to upload');
+      return false;
+    }
+    
     let found = false;
 
     // In some cases it's really handy to upload the first
     // and last chunk of a file quickly; this let's the server check the file's
     // metadata and determine if there's even a point in continuing.
     if (getOpt('prioritizeFirstAndLastChunk')) {
-      each(files, (file: ResumableFile) => {
+      each(currentFiles, (file: ResumableFile) => {
+        // Skip paused files
+        if (file.isPaused()) {
+          return true;
+        }
+        
         if (file.chunks.length && file.chunks[0].status() === 'pending' && file.chunks[0].preprocessState === 0) {
+          console.log('Prioritizing first chunk of file:', file.fileName);
           file.chunks[0].send();
           found = true;
           return false;
         }
         if (file.chunks.length > 1 && file.chunks[file.chunks.length - 1].status() === 'pending' && file.chunks[file.chunks.length - 1].preprocessState === 0) {
+          console.log('Prioritizing last chunk of file:', file.fileName);
           file.chunks[file.chunks.length - 1].send();
           found = true;
           return false;
         }
         return true;
       });
-      if (found) return true;
+      if (found) {
+        console.log('uploadNextChunk returning true (prioritized chunk)');
+        return true;
+      }
     }
 
     // Now, simply look for the next, best thing to upload
-    each(files, (file: ResumableFile) => {
+    each(currentFiles, (file: ResumableFile) => {
+      // Skip paused files
+      if (file.isPaused()) {
+        return true;
+      }
+      
+      // Log chunk statuses for debugging
+      let pendingCount = 0;
+      let uploadingCount = 0;
+      let successCount = 0;
+      let errorCount = 0;
+      
+      each(file.chunks, (chunk: ResumableChunk) => {
+        const status = chunk.status();
+        if (status === 'pending') pendingCount++;
+        if (status === 'uploading') uploadingCount++;
+        if (status === 'success') successCount++;
+        if (status === 'error') errorCount++;
+      });
+      
+      console.log(`File ${file.fileName} chunks - pending: ${pendingCount}, uploading: ${uploadingCount}, success: ${successCount}, error: ${errorCount}, total: ${file.chunks.length}`);
+      
       found = file.upload();
-      if (found) return false;
+      if (found) {
+        console.log('Found next chunk to upload in file:', file.fileName);
+        return false;
+      }
       return true;
     });
-    if (found) return true;
+    if (found) {
+      console.log('uploadNextChunk returning true (regular chunk)');
+      return true;
+    }
 
     // The are no more outstanding chunks to upload, check is everything is done
     let outstanding = false;
-    each(files, (file: ResumableFile) => {
+    each(currentFiles, (file: ResumableFile) => {
       if (!file.isComplete()) {
         outstanding = true;
+        console.log('File not complete:', file.fileName, 'chunks:', file.chunks.length);
         return false;
       }
       return true;
     });
     if (!outstanding) {
       // All chunks have been uploaded, complete
+      console.log('All files complete, firing complete event');
       fire('complete');
+    } else {
+      console.log('Some files not complete, but no chunks to upload');
+      
+      // Try to find any chunks that might be in a stuck state and retry them
+      each(currentFiles, (file: ResumableFile) => {
+        // Skip paused files
+        if (file.isPaused()) {
+          return true;
+        }
+        
+        let foundStuckChunk = false;
+        each(file.chunks, (chunk: ResumableChunk) => {
+          if (chunk.status() !== 'success' && !chunk.xhr) {
+            console.log(`Found potentially stuck chunk ${chunk.offset + 1}, retrying`);
+            chunk.send();
+            foundStuckChunk = true;
+            return false;
+          }
+          return true;
+        });
+        if (foundStuckChunk) return false;
+        return true;
+      });
     }
+    console.log('uploadNextChunk returning false (no chunks to upload)');
     return false;
-  }, [getOpt, fire, files]);
+  }, [getOpt, fire]);
 
   // Process directory recursively
   const processDirectory = useCallback((directory: any, path: string, items: File[], cb: () => void) => {
@@ -179,13 +268,24 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
 
   // Remove a file from the list
   const removeFile = useCallback((file: ResumableFile) => {
-    setFiles(prevFiles => prevFiles.filter(f => f !== file));
-  }, []);
+    console.log(`removeFile called for: ${file.fileName}`);
+    console.log(`Current files count before removal: ${files.length}`);
+    
+    setFiles(prevFiles => {
+      const newFiles = prevFiles.filter(f => f !== file);
+      console.log(`Files count after removal: ${newFiles.length}`);
+      return newFiles;
+    });
+  }, [files.length]);
 
   // Get a file by its unique identifier
   const getFromUniqueIdentifier = useCallback((uniqueIdentifier: string): ResumableFile | null => {
     let ret: ResumableFile | null = null;
-    each(files, (f: ResumableFile) => {
+    
+    // Use filesRef.current to avoid stale closure issues
+    const currentFiles = filesRef.current;
+    
+    each(currentFiles, (f: ResumableFile) => {
       if (f.uniqueIdentifier === uniqueIdentifier) {
         ret = f;
         return false;
@@ -193,7 +293,7 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
       return true;
     });
     return ret;
-  }, [files]);
+  }, []);
 
   // Create a ResumableFile object
   const createResumableFile = useCallback((file: File, uniqueIdentifier: string): ResumableFile => {
@@ -239,21 +339,44 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
       },
       
       isComplete: function() {
-        let outstanding = false;
+        console.log(`isComplete check for ${this.fileName}, chunks: ${this.chunks.length}`);
+        
+        // If preprocessing is in progress, file is not complete
         if (this.preprocessState === 1) {
+          console.log(`${this.fileName} is not complete: preprocessing in progress`);
           return false;
         }
         
+        // If there are no chunks, file is not complete (this shouldn't happen normally)
+        if (this.chunks.length === 0) {
+          console.log(`${this.fileName} is not complete: no chunks`);
+          return false;
+        }
+        
+        // Count chunks by status
+        let pendingCount = 0;
+        let uploadingCount = 0;
+        let successCount = 0;
+        let errorCount = 0;
+        let preprocessingCount = 0;
+        
         each(this.chunks, (chunk: ResumableChunk) => {
           const status = chunk.status();
-          if (status === 'pending' || status === 'uploading' || chunk.preprocessState === 1) {
-            outstanding = true;
-            return false;
-          }
-          return true;
+          if (status === 'pending') pendingCount++;
+          else if (status === 'uploading') uploadingCount++;
+          else if (status === 'success') successCount++;
+          else if (status === 'error') errorCount++;
+          
+          if (chunk.preprocessState === 1) preprocessingCount++;
         });
         
-        return !outstanding;
+        console.log(`${this.fileName} chunks - pending: ${pendingCount}, uploading: ${uploadingCount}, success: ${successCount}, error: ${errorCount}, preprocessing: ${preprocessingCount}, total: ${this.chunks.length}`);
+        
+        // File is complete only if all chunks are successful
+        const isComplete = pendingCount === 0 && uploadingCount === 0 && preprocessingCount === 0 && successCount === this.chunks.length;
+        console.log(`${this.fileName} is ${isComplete ? 'complete' : 'not complete'}`);
+        
+        return isComplete;
       },
       
       pause: function(pause?: boolean) {
@@ -262,10 +385,25 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
         } else {
           this._pause = pause;
         }
+        
+        // If pausing, abort any active uploads
+        if (this._pause) {
+          this.abort();
+        } else {
+          // If resuming and not globally paused, trigger the upload process
+          if (!isPausedRef.current) {
+            fire('fileProgress', this);
+            uploadNextChunk();
+          }
+        }
+        
+        // Trigger event for UI updates
+        fire('fileProgress', this);
       },
       
       isPaused: function() {
-        return this._pause;
+        // Check both the file's local pause state and the global pause state
+        return this._pause || isPausedRef.current;
       },
       
       abort: function() {
@@ -282,23 +420,32 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
       },
       
       cancel: function() {
+        console.log(`cancel called for file: ${this.fileName}`);
         // Reset this file to be void
         const _chunks = this.chunks;
+        const chunkCount = _chunks.length;
         this.chunks = [];
         
         // Stop current uploads
+        let abortedChunks = 0;
         each(_chunks, (c: ResumableChunk) => {
           if (c.status() === 'uploading') {
             c.abort();
-            uploadNextChunk();
+            abortedChunks++;
           }
         });
+        console.log(`Aborted ${abortedChunks} uploading chunks out of ${chunkCount} total chunks`);
         
+        console.log(`Removing file ${this.fileName} from files array`);
         removeFile(this);
         fire('fileProgress', this);
+        
+        // Try to upload next chunk from another file
+        uploadNextChunk();
       },
       
       retry: function() {
+        this._error = false;
         this.bootstrap();
         let firedRetry = false;
         
@@ -339,7 +486,7 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
                 case 'error':
                   this.abort();
                   this._error = true;
-                  this.chunks = [];
+                  console.log(`Error in chunk for file ${this.fileName}, but keeping chunks array intact for potential retry`);
                   fire('fileError', this, message);
                   break;
                 case 'success':
@@ -374,6 +521,7 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
       },
       
       upload: function() {
+        console.log(`File.upload called for ${this.fileName}, chunks: ${this.chunks.length}, paused: ${this.isPaused()}`);
         let found = false;
         
         if (this.isPaused() === false) {
@@ -384,16 +532,28 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
               case 0:
                 this.preprocessState = 1;
                 preprocess(this);
+                console.log(`File.upload returning true (preprocessing started)`);
                 return true;
               case 1:
+                console.log(`File.upload returning true (preprocessing in progress)`);
                 return true;
               case 2:
                 break;
             }
           }
           
+          let pendingChunks = 0;
           each(this.chunks, (chunk: ResumableChunk) => {
             if (chunk.status() === 'pending' && chunk.preprocessState !== 1) {
+              pendingChunks++;
+            }
+          });
+          console.log(`File ${this.fileName} has ${pendingChunks} pending chunks`);
+          
+          // Find a chunk to upload
+          each(this.chunks, (chunk: ResumableChunk) => {
+            if (chunk.status() === 'pending' && chunk.preprocessState !== 1) {
+              console.log(`Sending chunk ${chunk.offset + 1}/${this.chunks.length} for ${this.fileName}`);
               chunk.send();
               found = true;
               return false;
@@ -402,6 +562,7 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
           });
         }
         
+        console.log(`File.upload returning ${found} for ${this.fileName}`);
         return found;
       },
       
@@ -420,18 +581,21 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
     fire('chunkingStart', resumableFile);
     resumableFile.bootstrap();
     return resumableFile;
-  }, [getOpt, fire, on, removeFile]);
+  }, [getOpt, fire, on, removeFile, uploadNextChunk]);
 
   // Append files from file list
   const appendFilesFromFileList = useCallback((fileList: File[], event?: Event) => {
+    // Use filesRef.current to avoid stale closure issues
+    const currentFiles = filesRef.current;
+    
     // Check for uploading too many files
     let errorCount = 0;
     const o = getOpt(['maxFiles', 'minFileSize', 'maxFileSize', 'fileType']) as any;
     
-    if (typeof o.maxFiles !== 'undefined' && o.maxFiles < (fileList.length + files.length)) {
+    if (typeof o.maxFiles !== 'undefined' && o.maxFiles < (fileList.length + currentFiles.length)) {
       // If single-file upload, file is already added, and trying to add 1 new file, simply replace the already-added file
-      if (o.maxFiles === 1 && files.length === 1 && fileList.length === 1) {
-        removeFile(files[0]);
+      if (o.maxFiles === 1 && currentFiles.length === 1 && fileList.length === 1) {
+        removeFile(currentFiles[0]);
       } else {
         const maxFilesErrorCallback = getOpt('maxFilesErrorCallback') as Function;
         if (maxFilesErrorCallback) {
@@ -551,23 +715,34 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
     });
     
     return true;
-  }, [getOpt, fire, files, removeFile, getFromUniqueIdentifier, createResumableFile]);
+  }, [getOpt, fire, removeFile, getFromUniqueIdentifier, createResumableFile]);
 
   // Public API methods
   const upload = useCallback(() => {
-    // Make sure we don't start too many uploads at once
-    if (isUploading()) return;
+    // Reset global pause state
+    isPausedRef.current = false;
+    
+    // Use filesRef.current to avoid stale closure issues
+    const currentFiles = filesRef.current;
     
     // Kick off the queue
+    const simultaneousUploads = getOpt('simultaneousUploads') as number;
+    console.log(`Starting upload process with simultaneousUploads=${simultaneousUploads}`);
+    console.log(`Total files: ${currentFiles.length}, total chunks: ${currentFiles.reduce((sum, file) => sum + file.chunks.length, 0)}`);
+    
     fire('uploadStart');
-    for (let num = 1; num <= (getOpt('simultaneousUploads') as number); num++) {
+    for (let num = 1; num <= simultaneousUploads; num++) {
+      console.log(`Initiating upload for chunk batch ${num}/${simultaneousUploads}`);
       uploadNextChunk();
     }
   }, [fire, getOpt, uploadNextChunk]);
 
   const isUploading = useCallback(() => {
     let uploading = false;
-    each(files, (file: ResumableFile) => {
+    // Use filesRef.current to avoid stale closure issues
+    const currentFiles = filesRef.current;
+    
+    each(currentFiles, (file: ResumableFile) => {
       if (file.isUploading()) {
         uploading = true;
         return false;
@@ -575,36 +750,58 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
       return true;
     });
     return uploading;
-  }, [files]);
+  }, []);
 
   const pause = useCallback(() => {
-    // Resume all chunks currently being uploaded
-    each(files, (file: ResumableFile) => {
+    // Set global pause state
+    isPausedRef.current = true;
+    
+    // Abort all chunks currently being uploaded
+    // Use filesRef.current to avoid stale closure issues
+    const currentFiles = filesRef.current;
+    
+    each(currentFiles, (file: ResumableFile) => {
       file.abort();
+      // Don't set individual file pause state - that's handled separately
     });
+    
     fire('pause');
-  }, [fire, files]);
+  }, [fire]);
 
   const cancel = useCallback(() => {
+    // Use filesRef.current to avoid stale closure issues
+    const currentFiles = filesRef.current;
+    
+    console.log(`cancel all called, files count: ${currentFiles.length}`);
     fire('beforeCancel');
-    for (let i = files.length - 1; i >= 0; i--) {
-      files[i].cancel();
+    
+    // Make a copy of the files array to avoid issues with it changing during iteration
+    const filesToCancel = [...currentFiles];
+    console.log(`Canceling ${filesToCancel.length} files`);
+    
+    for (let i = filesToCancel.length - 1; i >= 0; i--) {
+      console.log(`Canceling file ${i+1}/${filesToCancel.length}: ${filesToCancel[i].fileName}`);
+      filesToCancel[i].cancel();
     }
+    
     fire('cancel');
-  }, [fire, files]);
+  }, [fire]);
 
   const progress = useCallback(() => {
     let totalDone = 0;
     let totalSize = 0;
     
-    // Resume all chunks currently being uploaded
-    each(files, (file: ResumableFile) => {
+    // Use filesRef.current to avoid stale closure issues
+    const currentFiles = filesRef.current;
+    
+    // Calculate progress across all files
+    each(currentFiles, (file: ResumableFile) => {
       totalDone += file.progress() * file.size;
       totalSize += file.size;
     });
     
     return totalSize > 0 ? totalDone / totalSize : 0;
-  }, [files]);
+  }, []);
 
   const addFile = useCallback((file: File, event?: Event) => {
     appendFilesFromFileList([file], event);
@@ -616,11 +813,15 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
 
   const getSize = useCallback(() => {
     let totalSize = 0;
-    each(files, (file: ResumableFile) => {
+    
+    // Use filesRef.current to avoid stale closure issues
+    const currentFiles = filesRef.current;
+    
+    each(currentFiles, (file: ResumableFile) => {
       totalSize += file.size;
     });
     return totalSize;
-  }, [files]);
+  }, []);
 
   return {
     support,

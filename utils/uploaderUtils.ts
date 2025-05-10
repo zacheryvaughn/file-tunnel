@@ -201,15 +201,20 @@ export const createResumableChunk = (
     },
     
     test: function() {
+      console.log(`Chunk.test called for chunk ${this.offset + 1} of file ${this.fileObj.fileName}`);
       this.xhr = new XMLHttpRequest();
       
       const testHandler = () => {
         this.tested = true;
         const status = this.status();
+        console.log(`Chunk test result for chunk ${this.offset + 1}: ${status}, status code: ${this.xhr?.status}`);
+        
         if (status === 'success') {
+          console.log(`Chunk ${this.offset + 1} already exists on server, skipping upload`);
           callback(status, this.message());
           uploadNextChunk();
         } else {
+          console.log(`Chunk ${this.offset + 1} doesn't exist on server, proceeding with upload`);
           this.send();
         }
       };
@@ -279,21 +284,27 @@ export const createResumableChunk = (
     },
     
     send: function() {
+      console.log(`Chunk.send called for chunk ${this.offset + 1} of file ${this.fileObj.fileName}`);
+      
       const preprocess = getOpt('preprocess');
       if (typeof preprocess === 'function') {
         switch (this.preprocessState) {
           case 0:
             this.preprocessState = 1;
             preprocess(this);
+            console.log(`Chunk preprocessing started for chunk ${this.offset + 1}`);
             return;
           case 1:
+            console.log(`Chunk preprocessing in progress for chunk ${this.offset + 1}`);
             return;
           case 2:
+            console.log(`Chunk preprocessing completed for chunk ${this.offset + 1}`);
             break;
         }
       }
       
       if (getOpt('testChunks') && !this.tested) {
+        console.log(`Testing if chunk ${this.offset + 1} exists on server`);
         this.test();
         return;
       }
@@ -317,18 +328,41 @@ export const createResumableChunk = (
       // Done (either done, failed or retry)
       const doneHandler = () => {
         const status = this.status();
+        console.log(`Chunk ${this.offset + 1} completed with status: ${status}, xhr status: ${this.xhr?.status}`);
+        
+        // Log more details about the response
+        if (this.xhr) {
+          console.log(`Chunk ${this.offset + 1} response:`, {
+            status: this.xhr.status,
+            statusText: this.xhr.statusText,
+            responseText: this.xhr.responseText,
+            isPermanentError: (getOpt('permanentErrors') as number[]).includes(this.xhr.status),
+            maxRetries: getOpt('maxChunkRetries'),
+            currentRetries: this.retries
+          });
+        }
+        
         if (status === 'success' || status === 'error') {
+          console.log(`Chunk ${this.offset + 1} ${status === 'success' ? 'succeeded' : 'failed permanently'}, calling uploadNextChunk`);
           callback(status, this.message());
-          uploadNextChunk();
+          
+          // Add a small delay before calling uploadNextChunk to ensure state updates have propagated
+          setTimeout(() => {
+            console.log(`Delayed uploadNextChunk call for chunk ${this.offset + 1}`);
+            uploadNextChunk();
+          }, 50);
         } else {
+          console.log(`Chunk ${this.offset + 1} needs retry, attempt ${this.retries + 1}`);
           callback('retry', this.message());
           this.abort();
           this.retries++;
           const retryInterval = getOpt('chunkRetryInterval');
           if (retryInterval !== undefined) {
             this.pendingRetry = true;
+            console.log(`Scheduling retry for chunk ${this.offset + 1} in ${retryInterval}ms`);
             setTimeout(() => this.send(), retryInterval);
           } else {
+            console.log(`Immediate retry for chunk ${this.offset + 1}`);
             this.send();
           }
         }
