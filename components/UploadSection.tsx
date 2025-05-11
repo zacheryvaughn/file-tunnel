@@ -5,7 +5,6 @@ import { useUploader } from '../hooks/useUploader';
 import { formatSize } from '../utils/uploaderUtils';
 import UploadDropzone from './UploadDropzone';
 import UploadProgress from './UploadProgress';
-import UploadQueue from './UploadQueue';
 
 interface UploadSectionProps {
   className?: string;
@@ -65,7 +64,6 @@ export default function UploadSection({
     });
   }, [uploader]);
 
-
   return (
     <div className={`w-full max-w-3xl mx-auto ${className}`}>
       <div className="space-y-6">
@@ -79,19 +77,6 @@ export default function UploadSection({
         <UploadDropzone uploader={uploader} />
         
         <UploadProgress uploader={uploader} />
-        
-        <UploadQueue uploader={uploader} />
-        
-        {uploader.files.length > 0 && !uploader.isUploading() && (
-          <div className="flex justify-center">
-            <button
-              onClick={() => uploader.upload()}
-              className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 transition-colors"
-            >
-              Start Upload
-            </button>
-          </div>
-        )}
       </div>
     </div>
   );

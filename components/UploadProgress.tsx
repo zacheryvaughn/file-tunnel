@@ -2,7 +2,9 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useUploader } from '../hooks/useUploader';
+import { ResumableFile } from '../types/uploaderTypes';
 import { formatSize } from '../utils/uploaderUtils';
+import Image from 'next/image';
 
 interface UploadProgressProps {
   uploader: ReturnType<typeof useUploader>;
@@ -10,48 +12,46 @@ interface UploadProgressProps {
 }
 
 export default function UploadProgress({ uploader, className = '' }: UploadProgressProps) {
+  // Combined state from both components
   const [progress, setProgress] = useState(0);
   const [totalSize, setTotalSize] = useState(0);
   const [uploadedSize, setUploadedSize] = useState(0);
-  const [isUploading, setIsUploading] = useState(false);
+  const [files, setFiles] = useState<ResumableFile[]>([]);
 
-  // Update progress whenever files change or progress is made
-  const updateProgress = useCallback(() => {
+  // Combined update function for all state
+  const updateStatus = useCallback(() => {
+    // Update overall progress (from UploadProgress)
     const currentProgress = uploader.progress();
     setProgress(currentProgress);
     
     const total = uploader.getSize();
     setTotalSize(total);
     setUploadedSize(Math.round(total * currentProgress));
-    setIsUploading(uploader.isUploading());
+    
+    // Update files list (from UploadQueue)
+    setFiles([...uploader.files]);
   }, [uploader]);
 
   useEffect(() => {
-    // Set up event listeners for progress updates
-    uploader.on('fileProgress', updateProgress);
-    uploader.on('fileSuccess', updateProgress);
-    uploader.on('fileError', updateProgress);
-    uploader.on('fileAdded', updateProgress);
-    uploader.on('filesAdded', updateProgress);
-    uploader.on('complete', updateProgress);
-    uploader.on('progress', updateProgress);
+    // Combined event listeners from both components
+    const events = [
+      'fileProgress', 'fileSuccess', 'fileError', 'fileAdded',
+      'filesAdded', 'fileRemoved', 'complete', 'progress'
+    ];
+    
+    // Register all events with the same handler
+    events.forEach(event => uploader.on(event, updateStatus));
+    
+    // Special case for uploadStart
     uploader.on('uploadStart', () => {
-      setIsUploading(true);
-      updateProgress();
-    });
-    uploader.on('pause', () => {
-      setIsUploading(false);
-      updateProgress();
+      updateStatus();
     });
     
-    // Initial progress update
-    updateProgress();
+    // Initial update
+    updateStatus();
     
-    // Clean up event listeners
-    return () => {
-      // No explicit cleanup needed as the events are stored in the uploader's internal state
-    };
-  }, [uploader, updateProgress]);
+    // No explicit cleanup needed
+  }, [uploader, updateStatus]);
 
   // Format the progress percentage
   const progressPercent = Math.round(progress * 100);
@@ -61,64 +61,107 @@ export default function UploadProgress({ uploader, className = '' }: UploadProgr
     return null;
   }
 
+  // Helper function to get file extension (from UploadQueue)
+  const getFileIcon = (filename: string) => {
+    return '/file.svg';
+  };
+
   return (
     <div className={`w-full ${className}`}>
-      <div className="flex justify-between items-center mb-2">
-        <div className="text-sm font-medium">
-          {isUploading ? 'Uploading...' : progressPercent === 100 ? 'Upload complete' : 'Upload paused'}
-        </div>
-        <div className="text-sm text-gray-500 dark:text-gray-400">
-          {formatSize(uploadedSize)} / {formatSize(totalSize)}
-        </div>
-      </div>
-      
-      <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
-        <div 
-          className={`h-2.5 rounded-full ${
-            progressPercent === 100 
-              ? 'bg-green-500' 
-              : isUploading 
-                ? 'bg-blue-500' 
-                : 'bg-yellow-500'
-          }`}
-          style={{ width: `${progressPercent}%` }}
-        ></div>
-      </div>
-      
-      <div className="flex justify-between mt-2">
-        <div className="text-sm text-gray-500 dark:text-gray-400">
-          {progressPercent}%
+      {/* Overall Progress Section */}
+      <div className="mb-6">
+        <div className="flex justify-between items-center mb-2">
+          <div className="text-sm font-medium">
+            {progress > 0 && progress < 1 ? 'Uploading...' : progress === 0 ? 'Waiting...' : ''}
+          </div>
+          <div className="text-sm text-gray-500 dark:text-gray-400">
+            {formatSize(uploadedSize)} / {formatSize(totalSize)}
+          </div>
         </div>
         
-        <div className="flex gap-2">
-          {!isUploading && progressPercent < 100 && (
-            <button
-              onClick={() => uploader.upload()}
-              className="text-sm text-blue-500 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
-            >
-              Resume
-            </button>
-          )}
-          
-          {isUploading && (
-            <button
-              onClick={() => uploader.pause()}
-              className="text-sm text-yellow-500 hover:text-yellow-700 dark:text-yellow-400 dark:hover:text-yellow-300"
-            >
-              Pause
-            </button>
-          )}
-          
-          {uploader.files.length > 0 && (
-            <button
-              onClick={() => uploader.cancel()}
-              className="text-sm text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
-            >
-              Cancel All
-            </button>
-          )}
+        <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+          <div
+            className="h-2.5 rounded-full bg-blue-500"
+            style={{ width: `${progressPercent}%` }}
+          ></div>
+        </div>
+        
+        <div className="flex justify-between mt-2">
+          <div className="text-sm text-gray-500 dark:text-gray-400">
+            {progressPercent}%
+          </div>
         </div>
       </div>
+      
+      {/* Files List Section (from UploadQueue) */}
+      {files.length > 0 && (
+        <div className="mt-6">
+          <h3 className="text-lg font-medium mb-4">Files ({files.length})</h3>
+          
+          <div className="space-y-3">
+            {files.map((file) => {
+              const progress = file.progress();
+              const progressPercent = Math.round(progress * 100);
+              const isComplete = file.isComplete();
+              const hasError = file._error;
+              
+              return (
+                <div
+                  key={file.uniqueIdentifier}
+                  className="border rounded-lg p-3 bg-white dark:bg-gray-800 shadow-sm"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 flex-shrink-0">
+                      <Image
+                        src={getFileIcon(file.fileName)}
+                        alt={file.fileName}
+                        width={40}
+                        height={40}
+                        className="opacity-70"
+                      />
+                    </div>
+                    
+                    <div className="flex-grow min-w-0">
+                      <div className="flex justify-between items-start">
+                        <div className="truncate font-medium text-sm">
+                          {file.fileName}
+                        </div>
+                        <div className="text-xs text-gray-500 dark:text-gray-400 ml-2 flex-shrink-0">
+                          {formatSize(file.size)}
+                        </div>
+                      </div>
+                      
+                      <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2 dark:bg-gray-700">
+                        <div
+                          className={`h-1.5 rounded-full ${hasError ? 'bg-red-500' : 'bg-blue-500'}`}
+                          style={{ width: `${progressPercent}%` }}
+                        ></div>
+                      </div>
+                      
+                      <div className="flex justify-between items-center mt-2">
+                        <div className="text-xs text-gray-500 dark:text-gray-400">
+                          {hasError ? 'Error' : `${progressPercent}%`}
+                        </div>
+                        
+                        <div className="flex gap-2">
+                          {hasError && (
+                            <button
+                              onClick={() => file.retry()}
+                              className="text-xs text-blue-500 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+                            >
+                              Retry
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

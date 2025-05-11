@@ -1,3 +1,6 @@
+/**
+ * Simplified utility functions for the file uploader system
+ */
 import { UploaderOptions, ResumableChunk, ResumableFile } from '../types/uploaderTypes';
 
 // Default options
@@ -18,9 +21,6 @@ export const defaultOptions: UploaderOptions = {
   throttleProgressCallbacks: 0.5,
   query: {},
   headers: {},
-  preprocess: null,
-  preprocessFile: null,
-  method: 'multipart',
   uploadMethod: 'POST',
   testMethod: 'GET',
   prioritizeFirstAndLastChunk: false,
@@ -28,20 +28,20 @@ export const defaultOptions: UploaderOptions = {
   testTarget: null,
   parameterNamespace: '',
   testChunks: true,
-  generateUniqueIdentifier: null,
-  maxChunkRetries: 100,
-  chunkRetryInterval: undefined,
+  maxChunkRetries: 10,
+  chunkRetryInterval: 1000,
   permanentErrors: [400, 401, 403, 404, 409, 415, 500, 501],
   maxFiles: undefined,
   withCredentials: false,
   xhrTimeout: 0,
-  clearInput: true,
   chunkFormat: 'blob',
   setChunkTypeFromFile: false,
   fileType: [],
 };
 
-// Helper functions
+/**
+ * Format file size in human-readable format
+ */
 export const formatSize = (size: number): string => {
   if (size < 1024) {
     return size + ' bytes';
@@ -54,23 +54,37 @@ export const formatSize = (size: number): string => {
   }
 };
 
+/**
+ * Iterate over arrays or objects
+ */
 export const each = (obj: any, callback: Function): void => {
-  if (typeof obj.length !== 'undefined') {
-    for (let i = 0; i < obj.length; i++) {
-      // Array or FileList
-      if (callback(obj[i]) === false) return;
+  // Guard against undefined or null objects
+  if (!obj) {
+    console.warn('each called with undefined or null object');
+    return;
+  }
+  
+  try {
+    if (typeof obj.length !== 'undefined') {
+      for (let i = 0; i < obj.length; i++) {
+        if (callback(obj[i]) === false) return;
+      }
+    } else {
+      for (const key in obj) {
+        if (callback(key, obj[key]) === false) return;
+      }
     }
-  } else {
-    for (const key in obj) {
-      // Object
-      if (callback(key, obj[key]) === false) return;
-    }
+  } catch (error) {
+    console.error('Error in each function:', error);
   }
 };
 
+/**
+ * Generate a unique identifier for a file
+ */
 export const generateUniqueIdentifier = (
-  file: File, 
-  event?: Event, 
+  file: File,
+  event?: Event,
   customGenerator?: ((file: File, event?: Event) => string) | null
 ): string => {
   if (typeof customGenerator === 'function') {
@@ -201,20 +215,16 @@ export const createResumableChunk = (
     },
     
     test: function() {
-      console.log(`Chunk.test called for chunk ${this.offset + 1} of file ${this.fileObj.fileName}`);
       this.xhr = new XMLHttpRequest();
       
       const testHandler = () => {
         this.tested = true;
         const status = this.status();
-        console.log(`Chunk test result for chunk ${this.offset + 1}: ${status}, status code: ${this.xhr?.status}`);
         
         if (status === 'success') {
-          console.log(`Chunk ${this.offset + 1} already exists on server, skipping upload`);
           callback(status, this.message());
           uploadNextChunk();
         } else {
-          console.log(`Chunk ${this.offset + 1} doesn't exist on server, proceeding with upload`);
           this.send();
         }
       };
@@ -226,10 +236,10 @@ export const createResumableChunk = (
       // Add data from the query options
       const params: string[] = [];
       const parameterNamespace = getOpt('parameterNamespace') as string;
-      let customQuery = getOpt('query');
+      let customQuery = getOpt('query') || {};
       
       if (typeof customQuery === 'function') {
-        customQuery = customQuery(fileObj, this);
+        customQuery = customQuery(fileObj, this) || {};
       }
       
       each(customQuery, (k: string, v: any) => {
@@ -262,9 +272,9 @@ export const createResumableChunk = (
       this.xhr.withCredentials = getOpt('withCredentials') as boolean;
       
       // Add data from header options
-      let customHeaders = getOpt('headers');
+      let customHeaders = getOpt('headers') || {};
       if (typeof customHeaders === 'function') {
-        customHeaders = customHeaders(fileObj, this);
+        customHeaders = customHeaders(fileObj, this) || {};
       }
       
       each(customHeaders, (k: string, v: string) => {
@@ -284,27 +294,7 @@ export const createResumableChunk = (
     },
     
     send: function() {
-      console.log(`Chunk.send called for chunk ${this.offset + 1} of file ${this.fileObj.fileName}`);
-      
-      const preprocess = getOpt('preprocess');
-      if (typeof preprocess === 'function') {
-        switch (this.preprocessState) {
-          case 0:
-            this.preprocessState = 1;
-            preprocess(this);
-            console.log(`Chunk preprocessing started for chunk ${this.offset + 1}`);
-            return;
-          case 1:
-            console.log(`Chunk preprocessing in progress for chunk ${this.offset + 1}`);
-            return;
-          case 2:
-            console.log(`Chunk preprocessing completed for chunk ${this.offset + 1}`);
-            break;
-        }
-      }
-      
       if (getOpt('testChunks') && !this.tested) {
-        console.log(`Testing if chunk ${this.offset + 1} exists on server`);
         this.test();
         return;
       }
@@ -328,41 +318,21 @@ export const createResumableChunk = (
       // Done (either done, failed or retry)
       const doneHandler = () => {
         const status = this.status();
-        console.log(`Chunk ${this.offset + 1} completed with status: ${status}, xhr status: ${this.xhr?.status}`);
-        
-        // Log more details about the response
-        if (this.xhr) {
-          console.log(`Chunk ${this.offset + 1} response:`, {
-            status: this.xhr.status,
-            statusText: this.xhr.statusText,
-            responseText: this.xhr.responseText,
-            isPermanentError: (getOpt('permanentErrors') as number[]).includes(this.xhr.status),
-            maxRetries: getOpt('maxChunkRetries'),
-            currentRetries: this.retries
-          });
-        }
         
         if (status === 'success' || status === 'error') {
-          console.log(`Chunk ${this.offset + 1} ${status === 'success' ? 'succeeded' : 'failed permanently'}, calling uploadNextChunk`);
           callback(status, this.message());
-          
-          // Add a small delay before calling uploadNextChunk to ensure state updates have propagated
           setTimeout(() => {
-            console.log(`Delayed uploadNextChunk call for chunk ${this.offset + 1}`);
             uploadNextChunk();
           }, 50);
         } else {
-          console.log(`Chunk ${this.offset + 1} needs retry, attempt ${this.retries + 1}`);
           callback('retry', this.message());
           this.abort();
           this.retries++;
           const retryInterval = getOpt('chunkRetryInterval');
           if (retryInterval !== undefined) {
             this.pendingRetry = true;
-            console.log(`Scheduling retry for chunk ${this.offset + 1} in ${retryInterval}ms`);
             setTimeout(() => this.send(), retryInterval);
           } else {
-            console.log(`Immediate retry for chunk ${this.offset + 1}`);
             this.send();
           }
         }
@@ -386,9 +356,9 @@ export const createResumableChunk = (
       };
       
       // Mix in custom data
-      let customQuery = getOpt('query');
+      let customQuery = getOpt('query') || {};
       if (typeof customQuery === 'function') {
-        customQuery = customQuery(fileObj, this);
+        customQuery = customQuery(fileObj, this) || {};
       }
       
       each(customQuery, (k: string, v: any) => {
@@ -439,9 +409,9 @@ export const createResumableChunk = (
       this.xhr.withCredentials = getOpt('withCredentials') as boolean;
       
       // Add data from header options
-      let customHeaders = getOpt('headers');
+      let customHeaders = getOpt('headers') || {};
       if (typeof customHeaders === 'function') {
-        customHeaders = customHeaders(fileObj, this);
+        customHeaders = customHeaders(fileObj, this) || {};
       }
       
       if (this.xhr) {
@@ -507,17 +477,14 @@ export const processItem = (
   cb(); // Indicate processing is done
 };
 
-// Check browser support for file uploading
+/**
+ * Check browser support for file uploading
+ */
 export const checkSupport = (): boolean => {
   return (
     typeof(File) !== 'undefined' &&
     typeof(Blob) !== 'undefined' &&
     typeof(FileList) !== 'undefined' &&
-    (
-      !!(Blob.prototype as any).webkitSlice ||
-      !!(Blob.prototype as any).mozSlice ||
-      !!Blob.prototype.slice ||
-      false
-    )
+    !!Blob.prototype.slice
   );
 };

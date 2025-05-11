@@ -13,7 +13,14 @@ export default function UploadDropzone({ uploader, className = '' }: UploadDropz
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
+  // Drag event handlers
   const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }, []);
+  
+  const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(true);
@@ -25,12 +32,7 @@ export default function UploadDropzone({ uploader, className = '' }: UploadDropz
     setIsDragging(false);
   }, []);
   
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(true);
-  }, []);
-  
+  // Handle file drop
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -41,16 +43,18 @@ export default function UploadDropzone({ uploader, className = '' }: UploadDropz
     }
   }, [uploader]);
   
+  // Handle file selection via input
   const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       uploader.addFiles(e.target.files, e.nativeEvent);
-      // Reset the input value so the same file can be selected again
+      // Reset input to allow selecting the same file again
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
     }
   }, [uploader]);
   
+  // Handle click to open file dialog
   const handleClick = useCallback(() => {
     if (fileInputRef.current) {
       fileInputRef.current.click();
