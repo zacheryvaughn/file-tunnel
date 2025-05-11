@@ -3,7 +3,7 @@
  */
 import { UploaderOptions, ResumableChunk, ResumableFile } from '../types/uploaderTypes';
 
-// Default options
+// Default options - simplified to essential options
 export const defaultOptions: UploaderOptions = {
   chunkSize: 1 * 1024 * 1024,
   forceChunkSize: false,
@@ -11,7 +11,6 @@ export const defaultOptions: UploaderOptions = {
   fileParameterName: 'file',
   chunkNumberParameterName: 'resumableChunkNumber',
   chunkSizeParameterName: 'resumableChunkSize',
-  currentChunkSizeParameterName: 'resumableCurrentChunkSize',
   totalSizeParameterName: 'resumableTotalSize',
   typeParameterName: 'resumableType',
   identifierParameterName: 'resumableIdentifier',
@@ -19,8 +18,6 @@ export const defaultOptions: UploaderOptions = {
   relativePathParameterName: 'resumableRelativePath',
   totalChunksParameterName: 'resumableTotalChunks',
   throttleProgressCallbacks: 0.5,
-  query: {},
-  headers: {},
   uploadMethod: 'POST',
   testMethod: 'GET',
   prioritizeFirstAndLastChunk: false,
@@ -33,9 +30,6 @@ export const defaultOptions: UploaderOptions = {
   permanentErrors: [400, 401, 403, 404, 409, 415, 500, 501],
   maxFiles: undefined,
   withCredentials: false,
-  xhrTimeout: 0,
-  chunkFormat: 'blob',
-  setChunkTypeFromFile: false,
   fileType: [],
 };
 
@@ -233,59 +227,23 @@ export const createResumableChunk = (
       this.xhr.addEventListener('error', testHandler);
       this.xhr.addEventListener('timeout', testHandler);
       
-      // Add data from the query options
+      // Add essential parameters to identify chunk
       const params: string[] = [];
-      const parameterNamespace = getOpt('parameterNamespace') as string;
-      let customQuery = getOpt('query') || {};
+      const parameterNamespace = getOpt('parameterNamespace') as string || '';
       
-      if (typeof customQuery === 'function') {
-        customQuery = customQuery(fileObj, this) || {};
-      }
-      
-      each(customQuery, (k: string, v: any) => {
-        params.push([encodeURIComponent(parameterNamespace + k), encodeURIComponent(v)].join('='));
-      });
-      
-      // Add extra data to identify chunk
-      params.push(...[
-        ['chunkNumberParameterName', this.offset + 1],
-        ['chunkSizeParameterName', getOpt('chunkSize')],
-        ['currentChunkSizeParameterName', this.endByte - this.startByte],
-        ['totalSizeParameterName', fileObj.size],
-        ['typeParameterName', fileObj.file.type],
-        ['identifierParameterName', fileObj.uniqueIdentifier],
-        ['fileNameParameterName', fileObj.fileName],
-        ['relativePathParameterName', fileObj.relativePath],
-        ['totalChunksParameterName', fileObj.chunks.length]
-      ]
-        .filter(pair => getOpt(pair[0]))
-        .map(pair => [
-          parameterNamespace + getOpt(pair[0]),
-          encodeURIComponent(pair[1])
-        ].join('='))
+      // Add only the essential parameters
+      params.push(
+        `${parameterNamespace}${getOpt('chunkNumberParameterName')}=${this.offset + 1}`,
+        `${parameterNamespace}${getOpt('identifierParameterName')}=${encodeURIComponent(fileObj.uniqueIdentifier)}`,
+        `${parameterNamespace}${getOpt('fileNameParameterName')}=${encodeURIComponent(fileObj.fileName)}`,
+        `${parameterNamespace}${getOpt('totalChunksParameterName')}=${fileObj.chunks.length}`
       );
       
       // Append the relevant chunk and send it
-      this.xhr.open(getOpt('testMethod') as string, 
+      this.xhr.open(getOpt('testMethod') as string,
         getTarget('test', params, getOpt('target'), getOpt('testTarget')));
-      this.xhr.timeout = getOpt('xhrTimeout') as number;
       this.xhr.withCredentials = getOpt('withCredentials') as boolean;
-      
-      // Add data from header options
-      let customHeaders = getOpt('headers') || {};
-      if (typeof customHeaders === 'function') {
-        customHeaders = customHeaders(fileObj, this) || {};
-      }
-      
-      each(customHeaders, (k: string, v: string) => {
-        if (this.xhr) {
-          this.xhr.setRequestHeader(k, v);
-        }
-      });
-      
-      if (this.xhr) {
-        this.xhr.send(null);
-      }
+      this.xhr.send(null);
     },
     
     preprocessFinished: function() {
@@ -365,41 +323,17 @@ export const createResumableChunk = (
         query[k] = v;
       });
       
-      // Handle different browser implementations of slice
-      let bytes: Blob;
-      if (typeof fileObj.file.slice === 'function') {
-        bytes = fileObj.file.slice(this.startByte, this.endByte,
-                getOpt('setChunkTypeFromFile') ? fileObj.file.type : '');
-      } else if ((fileObj.file as any).mozSlice) {
-        bytes = (fileObj.file as any).mozSlice(this.startByte, this.endByte,
-                getOpt('setChunkTypeFromFile') ? fileObj.file.type : '');
-      } else if ((fileObj.file as any).webkitSlice) {
-        bytes = (fileObj.file as any).webkitSlice(this.startByte, this.endByte,
-                getOpt('setChunkTypeFromFile') ? fileObj.file.type : '');
-      } else {
-        // Fallback
-        bytes = fileObj.file.slice(this.startByte, this.endByte,
-                getOpt('setChunkTypeFromFile') ? fileObj.file.type : '');
-      }
+      // Modern browsers all support slice
+      const bytes = fileObj.file.slice(this.startByte, this.endByte);
       
       const data = new FormData();
-      const parameterNamespace = getOpt('parameterNamespace') as string;
+      const parameterNamespace = getOpt('parameterNamespace') as string || '';
       
       each(query, (k: string, v: any) => {
         data.append(parameterNamespace + k, v);
       });
       
-      if (getOpt('chunkFormat') === 'blob') {
-        data.append(parameterNamespace + (getOpt('fileParameterName') as string), bytes, fileObj.fileName);
-      } else if (getOpt('chunkFormat') === 'base64') {
-        const fr = new FileReader();
-        fr.onload = (e) => {
-          data.append(parameterNamespace + (getOpt('fileParameterName') as string), fr.result as string);
-          this.xhr?.send(data);
-        };
-        fr.readAsDataURL(bytes);
-        return;
-      }
+      data.append(parameterNamespace + (getOpt('fileParameterName') as string), bytes, fileObj.fileName);
       
       const target = getTarget('upload', [], getOpt('target'), getOpt('testTarget'));
       const method = getOpt('uploadMethod') as string;
@@ -430,51 +364,49 @@ export const createResumableChunk = (
   return chunk;
 };
 
-// Process items (files or directories)
+// Simplified process items function - focuses on files, simplifies directory handling
 export const processItem = (
-  item: any, 
-  path: string, 
-  items: File[], 
+  item: any,
+  path: string,
+  items: File[],
   cb: () => void,
   processDirectory: (directory: any, path: string, items: File[], cb: () => void) => void
 ): void => {
-  let entry;
+  // Handle File objects directly
+  if (item instanceof File) {
+    (item as any).relativePath = path + item.name;
+    items.push(item);
+    cb();
+    return;
+  }
   
+  // Handle FileSystem API entries
   if (item.isFile) {
-    // File provided
     item.file((file: File) => {
       (file as any).relativePath = path + file.name;
       items.push(file);
       cb();
     });
     return;
-  } else if (item.isDirectory) {
-    // Item is already a directory entry, just assign
-    entry = item;
-  } else if (item instanceof File) {
-    items.push(item);
   }
   
-  if (typeof item.webkitGetAsEntry === 'function') {
-    // Get entry from file object
-    entry = item.webkitGetAsEntry();
-  }
-  
-  if (entry && entry.isDirectory) {
-    // Directory provided, process it
+  // Handle directory entries
+  if (item.isDirectory || (typeof item.webkitGetAsEntry === 'function' &&
+      item.webkitGetAsEntry()?.isDirectory)) {
+    const entry = item.isDirectory ? item : item.webkitGetAsEntry();
     return processDirectory(entry, path + entry.name + '/', items, cb);
   }
   
+  // Handle DataTransferItem
   if (typeof item.getAsFile === 'function') {
-    // Item represents a File object, convert it
-    item = item.getAsFile();
-    if (item instanceof File) {
-      (item as any).relativePath = path + item.name;
-      items.push(item);
+    const file = item.getAsFile();
+    if (file instanceof File) {
+      (file as any).relativePath = path + file.name;
+      items.push(file);
     }
   }
   
-  cb(); // Indicate processing is done
+  cb();
 };
 
 /**

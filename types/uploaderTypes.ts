@@ -20,28 +20,17 @@ export interface UploaderOptions {
   maxChunkRetries?: number;
   chunkRetryInterval?: number;
   
-  // API parameter names (needed for server communication)
+  // Essential API parameter names
   fileParameterName?: string;
   chunkNumberParameterName?: string;
-  chunkSizeParameterName?: string;
-  currentChunkSizeParameterName?: string;
-  totalSizeParameterName?: string;
-  typeParameterName?: string;
   identifierParameterName?: string;
   fileNameParameterName?: string;
-  relativePathParameterName?: string;
   totalChunksParameterName?: string;
-  parameterNamespace?: string;
   
   // HTTP options
   uploadMethod?: string;
   testMethod?: string;
   withCredentials?: boolean;
-  xhrTimeout?: number;
-  
-  // Additional options
-  throttleProgressCallbacks?: number;
-  permanentErrors?: number[];
   
   // Error callbacks
   maxFilesErrorCallback?: (files: File[], errorCount: number) => void;
@@ -65,8 +54,8 @@ export interface ResumableChunk {
   // Status tracking
   tested: boolean;
   pendingRetry: boolean;
-  preprocessState: number;
   markComplete: boolean;
+  preprocessState: number;
   
   // Core methods
   status: () => 'pending' | 'uploading' | 'success' | 'error';
@@ -105,7 +94,7 @@ export interface ResumableFile {
   abort: () => void;
   pause: (pause?: boolean) => void;
   preprocessFinished: () => void;
-  markChunksCompleted: (chunkNumber: number) => void;
+  markChunksCompleted?: (chunkNumber: number) => void;
 }
 
 // Hook result interface
