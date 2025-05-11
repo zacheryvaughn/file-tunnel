@@ -242,17 +242,25 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
       progress: function() {
         if (this._error) return 1;
         
-        // Sum up progress across everything
-        let ret = 0;
-        let error = false;
+        // Count completed chunks instead of summing weighted progress
+        // This provides more reliable progress for files with uneven chunk sizes
+        let completedChunks = 0;
+        let totalChunks = this.chunks.length;
+        
+        if (totalChunks === 0) return 0;
         
         each(this.chunks, (c: ResumableChunk) => {
-          if (c.status() === 'error') error = true;
-          ret += c.progress(true); // Get chunk progress relative to entire file
+          if (c.status() === 'success') {
+            completedChunks++;
+          } else if (c.status() === 'uploading' && c.loaded > 0) {
+            // Add partial progress for currently uploading chunks
+            completedChunks += (c.loaded / (c.endByte - c.startByte));
+          }
         });
         
-        ret = (error ? 1 : (ret > 0.99999 ? 1 : ret));
-        ret = Math.max(this._prevProgress, ret); // We don't want to lose percentages when an upload is paused
+        let ret = completedChunks / totalChunks;
+        ret = (ret > 0.99999 ? 1 : ret); // Round to 100% if very close
+        ret = Math.max(this._prevProgress, ret); // Don't lose percentages when paused
         this._prevProgress = ret;
         return ret;
       },
@@ -280,24 +288,18 @@ export const useUploader = (options: UploaderOptions = {}): UploaderHookResult =
           return false;
         }
         
-        // Count chunks by status
-        let pendingCount = 0;
-        let uploadingCount = 0;
-        let successCount = 0;
-        let preprocessingCount = 0;
+        // Simplified completion check - just verify all chunks are successful
+        let allSuccessful = true;
         
         each(this.chunks, (chunk: ResumableChunk) => {
-          const status = chunk.status();
-          if (status === 'pending') pendingCount++;
-          else if (status === 'uploading') uploadingCount++;
-          else if (status === 'success') successCount++;
-          
-          if (chunk.preprocessState === 1) preprocessingCount++;
+          if (chunk.status() !== 'success' || chunk.preprocessState === 1) {
+            allSuccessful = false;
+            return false; // Break the loop early
+          }
+          return true;
         });
         
-        // File is complete only if all chunks are successful
-        return pendingCount === 0 && uploadingCount === 0 &&
-               preprocessingCount === 0 && successCount === this.chunks.length;
+        return allSuccessful;
       },
       
       pause: function(pause?: boolean) {
